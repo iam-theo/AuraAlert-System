@@ -77,20 +77,25 @@ export class GetAnalyticsQuery implements IQuery {
 // ============================================================================
 
 export class IdempotencyStore {
-  private cache = new Map<string, { result: any; expiresAt: number }>();
-
-  public get(key: string): any | null {
-    const record = this.cache.get(key);
-    if (!record) return null;
-    if (Date.now() > record.expiresAt) {
-      this.cache.delete(key);
+  public async get(key: string): Promise<any | null> {
+    const { query } = await import('../db.js');
+    const result = await query('SELECT * FROM idempotency_keys WHERE key = $1', [key]);
+    if (result.rows.length === 0) return null;
+    const record = result.rows[0];
+    if (Date.now() > record.expires_at) {
+      await query('DELETE FROM idempotency_keys WHERE key = $1', [key]);
       return null;
     }
-    return record.result;
+    return typeof record.result === 'string' ? JSON.parse(record.result) : record.result;
   }
 
-  public set(key: string, result: any, ttlMs = 600000): void {
-    this.cache.set(key, { result, expiresAt: Date.now() + ttlMs });
+  public async set(key: string, result: any, ttlMs = 86400000): Promise<void> {
+    const { query } = await import('../db.js');
+    const expiresAt = Date.now() + ttlMs;
+    await query(
+      'INSERT INTO idempotency_keys (key, result, expires_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO UPDATE SET result = EXCLUDED.result, expires_at = EXCLUDED.expires_at',
+      [key, JSON.stringify(result), expiresAt]
+    );
   }
 }
 
@@ -123,7 +128,7 @@ export class SendNotificationHandler {
 
     // 1. Idempotency Checking (Exactly-Once Process Filter)
     if (idempotencyKey) {
-      const existingResult = this.idempotencyStore.get(idempotencyKey);
+      const existingResult = await this.idempotencyStore.get(idempotencyKey);
       if (existingResult) {
         this.auditService.log('SYSTEM', 'DUPLICATE_TRIGGER_DROPPED', 'idempotency_key', { idempotencyKey });
         return { ...existingResult, jobId: existingResult.jobId + '_deduped' };
@@ -183,7 +188,7 @@ export class SendNotificationHandler {
     const result = { success: true, jobId };
 
     if (idempotencyKey) {
-      this.idempotencyStore.set(idempotencyKey, result);
+      await this.idempotencyStore.set(idempotencyKey, result);
     }
 
     // Dispatch Domain Event
@@ -267,7 +272,7 @@ export class RunQueueWorkerHandler {
           await new Promise(r => setTimeout(r, delayMs));
 
           // 4. Executing with Circuit Breaker protections
-          const dispatcher = this.providerFactory.createDispatcher(provider.name, channel);
+          const dispatcher = this.providerFactory.createDispatcher(provider.name, channel, provider.config);
           
           await cb.execute(async () => {
             const dispatchResult = await dispatcher.send(recipient, 'Alert', `Notification for ${recipient}`);
@@ -418,7 +423,7 @@ export class HorizontalWorkerScalingSystem {
     private readonly configService: ConfigurationService
   ) {}
 
-  public scaleTo(count: number): void {
+  public async scaleTo(count: number): Promise<void> {
     const currentCount = this.workers.length;
     console.log(`[Microkernel Worker Control] Scaling workers from ${currentCount} to ${count}...`);
 
@@ -428,7 +433,7 @@ export class HorizontalWorkerScalingSystem {
         const workerId = `worker-node-${i + 1}`;
         this.workers.push(workerId);
         
-        const intervalMs = this.configService.get<number>('worker_interval_ms') || 2000;
+        const intervalMs = await this.configService.get<number>('worker_interval_ms') || 2000;
         const interval = setInterval(async () => {
           try {
             await this.runQueueWorkerHandler.handle(new RunQueueWorkerCommand(workerId));

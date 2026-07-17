@@ -48,7 +48,7 @@ class MicrokernelContainer {
     this.broadcastCallback = cb;
   }
 
-  public bootstrap(): void {
+  public async bootstrap(): Promise<void> {
     console.log('🚀 [Microkernel Container] Bootstrapping AuraAlert Clean microkernel...');
 
     // 1. Register Core Messaging Buses
@@ -165,7 +165,7 @@ class MicrokernelContainer {
     this.serviceDiscovery.register('HorizontalWorkerScalingSystem', horizontalWorkers);
 
     // Scale up to 3 worker threads by default to support parallel queue partitioning
-    horizontalWorkers.scaleTo(3);
+    await horizontalWorkers.scaleTo(3);
 
     // 8. Wire Up Domain Event Subscriptions (Chassis level listeners)
     eventBus.subscribe('NotificationQueuedEvent', (evt) => {
@@ -239,5 +239,5 @@ class MicrokernelContainer {
 }
 
 export const container = new MicrokernelContainer();
-container.bootstrap();
+container.bootstrap().catch(console.error);
 export default container;

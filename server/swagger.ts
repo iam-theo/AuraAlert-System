@@ -440,6 +440,16 @@ export const swaggerDocument = {
         }
       }
     },
+    "/api/events/subscribe": {
+      get: {
+        summary: "Subscribe to System Events (SSE)",
+        tags: ["Event Bus Registry"],
+        security: [{ BearerAuth: [] }],
+        responses: {
+          "200": { description: "Server-Sent Events stream" }
+        }
+      }
+    },
     "/api/events/registry": {
       get: {
         summary: "List Registered System Events",
@@ -569,6 +579,19 @@ export const swaggerDocument = {
         },
         responses: {
           "200": { description: "AI suggested template text returned" }
+        }
+      }
+    },
+    "/api/logs/{id}/troubleshoot": {
+      post: {
+        summary: "Troubleshoot Log Error via Gemini AI",
+        tags: ["Logs & Analytics"],
+        security: [{ BearerAuth: [] }],
+        parameters: [
+          { name: "id", in: "path", required: true, schema: { type: "string" } }
+        ],
+        responses: {
+          "200": { description: "AI diagnostic response" }
         }
       }
     },

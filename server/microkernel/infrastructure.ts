@@ -457,45 +457,29 @@ export interface StreamMessage {
   consumedBy?: string;
 }
 
-export class RedisStreamsSimulator {
-  private streams = new Map<string, StreamMessage[]>();
-  private offsets = new Map<string, string>(); // streamKey: lastDeliveredId
 
+export class RedisStreamsSimulator {
   async xadd(stream: string, payload: any): Promise<string> {
-    if (!this.streams.has(stream)) {
-      this.streams.set(stream, []);
-    }
-    const list = this.streams.get(stream)!;
-    const msgId = `${Date.now()}-${list.length}`;
-    const message: StreamMessage = { id: msgId, payload, acked: false };
-    list.push(message);
-    return msgId;
+    // Relying on Postgres as the real source of truth instead of arrays
+    return `${Date.now()}-0`;
   }
 
   async xread(stream: string, count = 10): Promise<StreamMessage[]> {
-    const list = this.streams.get(stream) || [];
-    const lastId = this.offsets.get(stream) || '0-0';
+    const channel = stream.replace('stream:', '');
+    const result = await query(
+      `SELECT id, variables_used as payload, recipient, template_name FROM notification_logs WHERE channel = $1 AND status = 'queued' ORDER BY created_at ASC LIMIT $2`,
+      [channel, count]
+    );
     
-    const unread = list.filter(m => m.id > lastId);
-    const slice = unread.slice(0, count);
-    if (slice.length > 0) {
-      this.offsets.set(stream, slice[slice.length - 1].id);
-    }
-    return slice;
+    return result.rows.map(row => ({
+      id: row.id,
+      payload: { jobId: row.id, recipient: row.recipient, variables: row.payload, templateName: row.template_name },
+      acked: false
+    }));
   }
 
-  async xack(stream: string, messageId: string): Promise<boolean> {
-    const list = this.streams.get(stream) || [];
-    const found = list.find(m => m.id === messageId);
-    if (found) {
-      found.acked = true;
-      return true;
-    }
-    return false;
-  }
-
-  getPending(stream: string): StreamMessage[] {
-    return (this.streams.get(stream) || []).filter(m => !m.acked);
+  async xack(stream: string, id: string): Promise<void> {
+    // Ack is handled implicitly when the status changes from 'queued' to 'sent'/'failed'/'retrying' in the worker
   }
 }
 
@@ -504,32 +488,30 @@ export class RedisStreamsSimulator {
 // ============================================================================
 
 export class DistributedLockManager {
-  private locks = new Map<string, { owner: string; expiresAt: number }>();
-
   async acquire(key: string, owner: string, ttlMs = 5000): Promise<boolean> {
+    const { query } = await import('../db.js');
     const now = Date.now();
-    const existing = this.locks.get(key);
-    
-    if (existing && existing.expiresAt > now) {
-      if (existing.owner === owner) {
-        // Re-entrant lock
-        existing.expiresAt = now + ttlMs;
-        return true;
+    try {
+      // First try to cleanup expired lock
+      await query('DELETE FROM distributed_locks WHERE key = $1 AND expires_at < $2', [key, now]);
+      
+      // Try to acquire lock
+      await query('INSERT INTO distributed_locks (key, owner, expires_at) VALUES ($1, $2, $3)', [key, owner, now + ttlMs]);
+      return true;
+    } catch (err: any) {
+      if (err.code === '23505') { // Unique violation
+        const result = await query('SELECT * FROM distributed_locks WHERE key = $1', [key]);
+        if (result.rows.length > 0 && result.rows[0].owner === owner) {
+           return true; // Already own it
+        }
       }
-      return false; // locked
+      return false;
     }
-    
-    this.locks.set(key, { owner, expiresAt: now + ttlMs });
-    return true;
   }
 
-  async release(key: string, owner: string): Promise<boolean> {
-    const existing = this.locks.get(key);
-    if (existing && existing.owner === owner) {
-      this.locks.delete(key);
-      return true;
-    }
-    return false;
+  async release(key: string, owner: string): Promise<void> {
+    const { query } = await import('../db.js');
+    await query('DELETE FROM distributed_locks WHERE key = $1 AND owner = $2', [key, owner]);
   }
 }
 
@@ -600,18 +582,37 @@ export interface IDispatcher {
 }
 
 export class ProviderFactory {
-  createDispatcher(providerName: string, channel: string): IDispatcher {
+  createDispatcher(providerName: string, channel: string, config: any): IDispatcher {
     return {
       send: async (recipient: string, subject: string, content: string) => {
-        const latencyMs = Math.floor(Math.random() * 200) + 40;
-        await new Promise(resolve => setTimeout(resolve, latencyMs));
-        
-        // Simulating highly descriptive, probabilistic network transport layer outcomes
-        const isSuccess = Math.random() > 0.10; // 90% success rate
-        if (isSuccess) {
-          return { success: true, latencyMs };
-        } else {
-          return { success: false, latencyMs, error: `Handshake packet timed out on ${providerName} transit carrier node.` };
+        const start = Date.now();
+        try {
+          if (channel === 'sms' || channel === 'whatsapp') {
+            const baseUrl = config?.baseUrl || 'https://v3.api.termii.com';
+            const response = await fetch(`${baseUrl}/api/sms/send`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  api_key: config?.apiKey,
+                  from: config?.senderId || 'AuraAlert',
+                  to: recipient,
+                  sms: content,
+                  type: 'plain',
+                  channel: 'generic'
+              })
+            });
+            const latencyMs = Date.now() - start;
+            if (response.ok) {
+              return { success: true, latencyMs };
+            } else {
+              const errData = await response.text();
+              return { success: false, latencyMs, error: errData };
+            }
+          } else {
+            return { success: false, latencyMs: Date.now() - start, error: 'Provider channel not fully implemented in dispatch conduit.' };
+          }
+        } catch (e: any) {
+          return { success: false, latencyMs: Date.now() - start, error: e.message };
         }
       }
     };
@@ -637,20 +638,30 @@ export class ServiceDiscovery {
 }
 
 export class ConfigurationService {
-  private config = new Map<string, any>([
-    ['worker_interval_ms', 2000],
-    ['max_bulk_batch_size', 50],
-    ['rate_limit_window_seconds', 60],
-    ['default_max_retries', 3],
-    ['backoff_factor', 2]
-  ]);
-
-  get<T>(key: string): T {
-    return this.config.get(key) as T;
-  }
-
-  set(key: string, value: any): void {
-    this.config.set(key, value);
+  async get<T>(key: string): Promise<T> {
+    const { query } = await import('../db.js');
+    const res = await query('SELECT value FROM system_configs WHERE key = $1', [key]);
+    if (res.rows.length === 0) {
+      // Fallbacks mapping exactly what used to be in memory
+      const defaults: Record<string, any> = {
+        'worker_interval_ms': 2000,
+        'max_bulk_batch_size': 50,
+        'rate_limit_window_seconds': 60,
+        'default_max_retries': 3,
+        'backoff_factor': 2
+      };
+      // We will automatically store it so DB remains source of truth
+      if (defaults[key] !== undefined) {
+         await query('INSERT INTO system_configs (key, value) VALUES ($1, $2)', [key, JSON.stringify(defaults[key])]);
+         return defaults[key] as T;
+      }
+      return null as unknown as T;
+    }
+    try {
+      return JSON.parse(res.rows[0].value) as T;
+    } catch {
+      return res.rows[0].value as unknown as T;
+    }
   }
 }
 

@@ -1,5 +1,4 @@
 import { Response } from 'express';
-import { CSVFormatter } from 'fast-csv';
 import * as csv from 'fast-csv';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
@@ -44,7 +43,7 @@ export async function exportData(res: Response, type: string, format: string, da
             const slide = pres.addSlide();
             slide.addText(`Report: ${type}`, { x: 1, y: 1 });
             slide.addText(JSON.stringify(data, null, 2), { x: 1, y: 2 });
-            const buffer = await pres.write('nodebuffer');
+            const buffer = await pres.write({ outputType: 'nodebuffer' } as any);
             res.send(buffer);
             break;
         default:

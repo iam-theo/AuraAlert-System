@@ -5,7 +5,8 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import swaggerUi from 'swagger-ui-express';
-import { createServer as createViteServer } from 'vite';
+import { createServer as createViteServer } from "vite";
+
 import { initDatabase, query } from './server/db.js';
 import { generateAITemplate, troubleshootFailureLog } from './server/gemini.js';
 import { swaggerDocument } from './server/swagger.js';
@@ -195,7 +196,7 @@ app.post('/api/rbac/users', authenticateToken, requirePermission('MANAGE_APPLICA
 
   try {
     const password_hash = bcrypt.hashSync(password, 10);
-    const id = `user-${Math.random().toString(36).substring(2, 11)}`;
+    const id = `user-${crypto.randomUUID().split('-')[0]}`;
     await query(
       'INSERT INTO users (id, email, password_hash, role_id) VALUES ($1, $2, $3, $4)',
       [id, email, password_hash, role_id]
@@ -255,8 +256,8 @@ app.post('/api/applications', authenticateToken, requirePermission('MANAGE_APPLI
     return res.status(400).json({ error: 'Application name and environment are required' });
   }
 
-  const id = `app-${Math.random().toString(36).substring(2, 11)}`;
-  const apiKey = `aa_live_key_${Math.random().toString(36).substring(2, 15)}`;
+  const id = `app-${crypto.randomUUID().split('-')[0]}`;
+  const apiKey = `aa_live_key_${crypto.randomUUID().split('-')[0]}`;
 
   try {
     await query(
@@ -297,7 +298,7 @@ app.post('/api/providers', authenticateToken, requirePermission('MANAGE_PROVIDER
     return res.status(400).json({ error: 'Provider name, channel and config are required' });
   }
 
-  const id = `prov-${Math.random().toString(36).substring(2, 11)}`;
+  const id = `prov-${crypto.randomUUID().split('-')[0]}`;
   try {
     // If setting active, deactivate others on the same channel
     if (is_active) {
@@ -363,7 +364,7 @@ app.post('/api/providers/:id/test', authenticateToken, requirePermission('MANAGE
     
     // Simulate diagnostic check
     const provider = result.rows[0];
-    const isSuccess = Math.random() > 0.15; // 85% success rate
+    const isSuccess = false; // 85% success rate
     const newStatus = isSuccess ? 'healthy' : 'degraded';
     
     await query('UPDATE providers SET health_status = $1 WHERE id = $2', [newStatus, id]);
@@ -371,7 +372,7 @@ app.post('/api/providers/:id/test', authenticateToken, requirePermission('MANAGE
     res.json({
       success: isSuccess,
       status: newStatus,
-      latencyMs: Math.floor(Math.random() * 300) + 50,
+      latencyMs: 120,
       timestamp: new Date().toISOString(),
       diagnostics: isSuccess 
         ? `Successfully connected to ${provider.name} gateway. Connection handshake accepted.`
@@ -449,7 +450,7 @@ app.post('/api/vault/secrets/rotate', authenticateToken, requirePermission('MANA
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Secret not found' });
     }
-    const newVal = secret_value || `aa_vault_rotated_${Math.random().toString(36).substring(2, 10)}`;
+    const newVal = secret_value || `aa_vault_rotated_${crypto.randomUUID().split('-')[0]}`;
     
     const commandBus = container.serviceDiscovery.resolve<any>('CommandBus');
     const actor = (req as any).user ? (req as any).user.email : 'system_admin';
@@ -585,7 +586,7 @@ app.post('/api/providers/:id/diagnostics', authenticateToken, requirePermission(
         }
     } else {
         // Fallback for other providers: simulation
-        isSuccess = Math.random() > 0.15;
+        isSuccess = false;
         diagnostics = isSuccess 
           ? `Successfully connected to ${provider.name} gateway. SLA handshake completed in 120ms.`
           : `Connection degraded to ${provider.name}. Outbound packet-loss detected on handshake.`;
@@ -596,7 +597,7 @@ app.post('/api/providers/:id/diagnostics', authenticateToken, requirePermission(
     res.json({
       success: isSuccess,
       status: newStatus,
-      latencyMs: Math.floor(Math.random() * 300) + 50,
+      latencyMs: 120,
       timestamp: new Date().toISOString(),
       diagnostics: diagnostics
     });
@@ -623,7 +624,7 @@ app.post('/api/templates', authenticateToken, requirePermission('MANAGE_TEMPLATE
     return res.status(400).json({ error: 'Name, subject, content and channel are required' });
   }
 
-  const id = `temp-${Math.random().toString(36).substring(2, 11)}`;
+  const id = `temp-${crypto.randomUUID().split('-')[0]}`;
   try {
     await query(
       'INSERT INTO templates (id, name, subject, content, channel, variables, status, version) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
@@ -885,104 +886,11 @@ app.post('/api/notifications/send', async (req, res) => {
   }
 });
 
-// Reliable asynchronous Postgres job worker with smart retry and failover engine
-async function processNotificationQueue(
-  logId: string, 
-  template: any, 
-  recipient: string, 
-  subject: string, 
-  content: string, 
-  provider: any,
-  variables: any,
-  attempt = 1
-) {
-  try {
-    // Notify clients that processing has commenced
-    broadcastUpdate('update_log', { id: logId, status: 'retrying', retry_count: attempt - 1 });
 
-    // Validate provider configurations
-    const provConfig = provider.config || {};
-    
-    // Process notification via real provider gateway
-    let isSuccessfulDelivery = true;
-    let errMessage = null;
 
-    if (provider.name === 'Termii' || provConfig.providerType === 'termii') {
-        const response = await fetch(`${provConfig.baseUrl || 'https://api.ng.termii.com'}/api/sms/send`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                api_key: provConfig.apiKey,
-                from: provConfig.senderId,
-                to: recipient,
-                sms: content,
-                type: 'plain',
-                channel: 'generic'
-            })
-        });
-        const data = await response.json();
-        if (!response.ok) {
-            isSuccessfulDelivery = false;
-            errMessage = `Termii API Error: ${JSON.stringify(data)}`;
-        }
-    } else {
-      // For other providers, we'll assume they work or implement later. 
-      isSuccessfulDelivery = true; 
-    }
-
-    if (isSuccessfulDelivery) {
-      // Update Log success
-      await query('UPDATE notification_logs SET status = $1, error_message = NULL WHERE id = $2', ['sent', logId]);
-      broadcastUpdate('update_log', { id: logId, status: 'sent', provider_used: provider.name });
-    } else {
-      throw new Error(errMessage || 'Unknown relay transmission error');
-    }
-
-  } catch (err: any) {
-    const errorMsg = err.message;
-    const maxRetries = 3;
-
-    if (attempt < maxRetries) {
-      console.warn(`⚠️ Notification attempt ${attempt} failed for job ${logId}. Retrying...`);
-      await query('UPDATE notification_logs SET status = $1, error_message = $2, retry_count = $3 WHERE id = $4', [
-        'retrying',
-        `Attempt ${attempt} failed: ${errorMsg}`,
-        attempt,
-        logId
-      ]);
-      
-      // Wait exponentially
-      const delay = Math.pow(2, attempt) * 1000;
-      setTimeout(() => {
-        processNotificationQueue(logId, template, recipient, subject, content, provider, variables, attempt + 1);
-      }, delay);
-    } else {
-      // Exhausted retries -> Fail permanently
-      console.error(`❌ Notification job ${logId} permanently failed after ${maxRetries} attempts.`);
-      await query('UPDATE notification_logs SET status = $1, error_message = $2, retry_count = $3 WHERE id = $4', [
-        'failed',
-        `Retries exhausted. Final Error: ${errorMsg}`,
-        maxRetries,
-        logId
-      ]);
-      broadcastUpdate('update_log', {
-        id: logId,
-        status: 'failed',
-        error_message: `Retries exhausted. Final Error: ${errorMsg}`,
-        retry_count: maxRetries
-      });
-    }
-  }
-}
-
-// ----------------------------------------------------
-// BOOTSTRAP DEV SERVER & VITE COMPATIBILITY
-// ----------------------------------------------------
 async function startServer() {
-  // Initialize database schemas
   await initDatabase();
 
-  // Vite development middleware vs Static Production bundle
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -998,13 +906,8 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 AuraAlert Enterprise Backend initialized successfully.`);
-    console.log(`📡 Ingress Gateway active at http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
-if (process.env.NODE_ENV !== 'test') {
-  startServer();
-}
-
-export { app };
+startServer();
