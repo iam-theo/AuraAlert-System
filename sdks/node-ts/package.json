@@ -1,0 +1,7 @@
+{
+  "name": "@auraalert/node",
+  "version": "1.0.0",
+  "description": "Official AuraAlert Node.js SDK",
+  "main": "index.js",
+  "types": "index.d.ts"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "AuraAlert",
+  "description": "Enterprise Notification Orchestration Platform. Centrally configure email, SMS, and WhatsApp channels, manage templates, events, and monitor deliveries with real-time logs and analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

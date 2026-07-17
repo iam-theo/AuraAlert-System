@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auraalert-deployment
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: auraalert
+  template:
+    metadata:
+      labels:
+        app: auraalert
+    spec:
+      containers:
+      - name: auraalert
+        image: gcr.io/your-project/auraalert:latest
+        ports:
+        - containerPort: 3000
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
